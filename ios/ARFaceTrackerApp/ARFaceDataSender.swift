@@ -174,39 +174,50 @@ class ARFaceDataSender: NSObject, ObservableObject, ARSessionDelegate {
             ]
         }
 
-        // Helper for 4x4 matrix flattening
+        // Helper for 4x4 matrix flattening (explicit typed loops to avoid Swift compiler timeout)
         func matrixToArray(_ m: simd_float4x4) -> [Double] {
-            return [
-                Double(m.columns.0.x), Double(m.columns.0.y), Double(m.columns.0.z), Double(m.columns.0.w),
-                Double(m.columns.1.x), Double(m.columns.1.y), Double(m.columns.1.z), Double(m.columns.1.w),
-                Double(m.columns.2.x), Double(m.columns.2.y), Double(m.columns.2.z), Double(m.columns.2.w),
-                Double(m.columns.3.x), Double(m.columns.3.y), Double(m.columns.3.z), Double(m.columns.3.w)
-            ].map { ($0 * 10000.0).rounded() / 10000.0 }
+            var arr = [Double]()
+            arr.reserveCapacity(16)
+            let cols = [m.columns.0, m.columns.1, m.columns.2, m.columns.3]
+            for col in cols {
+                arr.append((Double(col.x) * 10000.0).rounded() / 10000.0)
+                arr.append((Double(col.y) * 10000.0).rounded() / 10000.0)
+                arr.append((Double(col.z) * 10000.0).rounded() / 10000.0)
+                arr.append((Double(col.w) * 10000.0).rounded() / 10000.0)
+            }
+            return arr
         }
 
-        let payload: [String: Any] = [
-            "timestamp": now,
-            "head": [
-                "position": round3(headPos),
-                "rotation": [
-                    (Double(headRot.vector.x) * 10000.0).rounded() / 10000.0,
-                    (Double(headRot.vector.y) * 10000.0).rounded() / 10000.0,
-                    (Double(headRot.vector.z) * 10000.0).rounded() / 10000.0,
-                    (Double(headRot.vector.w) * 10000.0).rounded() / 10000.0
-                ],
-                "matrix": matrixToArray(transform)
-            ],
-            "leftEye": [
-                "lookDirection": round3(leftGaze),
-                "matrix": matrixToArray(faceAnchor.leftEyeTransform)
-            ],
-            "rightEye": [
-                "lookDirection": round3(rightGaze),
-                "matrix": matrixToArray(faceAnchor.rightEyeTransform)
-            ],
-            "lookAtPoint": round3(lookAtPoint),
-            "blendShapes": blendShapesDict
+        let rotList: [Double] = [
+            (Double(headRot.vector.x) * 10000.0).rounded() / 10000.0,
+            (Double(headRot.vector.y) * 10000.0).rounded() / 10000.0,
+            (Double(headRot.vector.z) * 10000.0).rounded() / 10000.0,
+            (Double(headRot.vector.w) * 10000.0).rounded() / 10000.0
         ]
+
+        let headDict: [String: Any] = [
+            "position": round3(headPos),
+            "rotation": rotList,
+            "matrix": matrixToArray(transform)
+        ]
+
+        let leftEyeDict: [String: Any] = [
+            "lookDirection": round3(leftGaze),
+            "matrix": matrixToArray(faceAnchor.leftEyeTransform)
+        ]
+
+        let rightEyeDict: [String: Any] = [
+            "lookDirection": round3(rightGaze),
+            "matrix": matrixToArray(faceAnchor.rightEyeTransform)
+        ]
+
+        var payload: [String: Any] = [:]
+        payload["timestamp"] = now
+        payload["head"] = headDict
+        payload["leftEye"] = leftEyeDict
+        payload["rightEye"] = rightEyeDict
+        payload["lookAtPoint"] = round3(lookAtPoint)
+        payload["blendShapes"] = blendShapesDict
 
         if let jsonData = try? JSONSerialization.data(withJSONObject: payload, options: []) {
             connection.send(content: jsonData, completion: .idempotent)
