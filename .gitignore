@@ -1,0 +1,25 @@
+# Python
+pc/venv/
+venv/
+**/__pycache__/
+*.py[cod]
+*$py.class
+pc/calibration_data.json
+
+# iOS / Xcode
+ios/build/
+ios/DerivedData/
+ios/*.xcodeproj
+ios/*.xcworkspace
+*.ipa
+*.app
+
+# Logs & Temp
+log/
+*.log
+
+# IDE & OS
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/

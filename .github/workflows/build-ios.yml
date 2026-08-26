@@ -1,0 +1,63 @@
+name: Build iOS IPA (No Mac Required)
+
+on:
+  push:
+    paths:
+      - 'ios/**'
+      - '.github/workflows/build-ios.yml'
+  workflow_dispatch:
+
+jobs:
+  build:
+    name: Build ARFaceTracker iOS IPA
+    runs-on: macos-14
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Setup Xcode
+        run: |
+          sudo xcode-select -s /Applications/Xcode_15.4.app || sudo xcode-select -s /Applications/Xcode.app
+          xcodebuild -version
+
+      - name: Install XcodeGen
+        run: |
+          if ! command -v xcodegen &> /dev/null; then
+            brew install xcodegen
+          fi
+          xcodegen --version
+
+      - name: Generate Xcode Project
+        run: |
+          cd ios
+          xcodegen generate
+
+      - name: Build App (Unsigned for Sideloading)
+        run: |
+          xcodebuild clean build \
+            -project ios/ARFaceTrackerApp.xcodeproj \
+            -scheme ARFaceTrackerApp \
+            -configuration Release \
+            -sdk iphoneos \
+            -destination 'generic/platform=iOS' \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY="" \
+            AD_HOC_CODE_SIGNING_ALLOWED=YES \
+            CONFIGURATION_BUILD_DIR="${PWD}/build/Release-iphoneos"
+
+      - name: Package into IPA
+        run: |
+          mkdir -p build/Payload
+          cp -R "build/Release-iphoneos/ARFaceTracker.app" build/Payload/
+          cd build
+          zip -r -9 ARFaceTrackerApp.ipa Payload/
+          ls -lh ARFaceTrackerApp.ipa
+
+      - name: Upload IPA Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ARFaceTrackerApp-iOS
+          path: build/ARFaceTrackerApp.ipa
+          retention-days: 14
