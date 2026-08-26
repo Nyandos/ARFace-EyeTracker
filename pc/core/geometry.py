@@ -92,6 +92,15 @@ class GeometryEstimator:
         self.head_gain_yaw = 1.0
         self.head_gain_pitch = 1.0
 
+        # Physical 3D Monitor Spatial Pose (Injected via PnP Calibration)
+        self.has_physical_pose = False
+        self.pnp_pos_x = 0.0          # Lateral offset (m)
+        self.pnp_pos_y = -0.10        # Height relative to monitor bottom (m)
+        self.pnp_pos_z = 0.22         # Depth in front of monitor (m)
+        self.pnp_pitch_rad = math.radians(25.0) # Upward tilt angle of iPhone
+        self.monitor_w_m = 0.531      # Standard 24" (m)
+        self.monitor_h_m = 0.299
+
     def set_gaze_gain(self, gain: float):
         self.gaze_gain = max(0.5, min(5.0, float(gain)))
 
@@ -99,6 +108,83 @@ class GeometryEstimator:
         self.head_gain_yaw = float(np.clip(gain_yaw, 0.4, 1.8))
         self.head_gain_pitch = float(np.clip(gain_pitch, 0.4, 1.8))
         print(f"[Geometry] Updated Head Decoupling Gains: Yaw={self.head_gain_yaw:.2f}, Pitch={self.head_gain_pitch:.2f}")
+
+    def set_physical_monitor_pose(
+        self,
+        pos_x_m: float,
+        pos_y_m: float,
+        pos_z_m: float,
+        pitch_deg: float,
+        monitor_w_m: float = 0.531,
+        monitor_h_m: float = 0.299
+    ):
+        self.pnp_pos_x = float(pos_x_m)
+        self.pnp_pos_y = float(pos_y_m)
+        self.pnp_pos_z = float(pos_z_m)
+        self.pnp_pitch_rad = math.radians(pitch_deg)
+        self.monitor_w_m = float(monitor_w_m)
+        self.monitor_h_m = float(monitor_h_m)
+        self.has_physical_pose = True
+        print(f"[Geometry] Physical 3D Monitor Placement Injected: X={pos_x_m*100.0:.1f}cm, Y={pos_y_m*100.0:.1f}cm, Z={pos_z_m*100.0:.1f}cm, Tilt={pitch_deg:.1f}°")
+
+    def set_sensor_lab_angles(self, monitor_pitch_deg: float, phone_pitch_deg: float):
+        """
+        Applies ground-truth physical tilt angles measured via iPhone screen-contact Sensor Lab.
+        monitor_pitch_deg: Upward angle of PC monitor (e.g. 85° = tilted back 5° from vertical)
+        phone_pitch_deg: Upward angle of iPhone on desk stand (e.g. 28°)
+        """
+        monitor_back_tilt = 90.0 - float(monitor_pitch_deg)
+        relative_pitch = float(phone_pitch_deg) + monitor_back_tilt
+        self.pnp_pitch_rad = math.radians(relative_pitch)
+        self.has_physical_pose = True
+        print(f"[Geometry] Sensor Lab Injected: MonitorPitch={monitor_pitch_deg:.1f}°, PhonePitch={phone_pitch_deg:.1f}°, RelativeIntersectPitch={relative_pitch:.1f}°")
+
+    def compute_physical_ray_intersection(self, eye_pos_world: np.ndarray, v_world: np.ndarray) -> Optional[Tuple[float, float]]:
+        """
+        Calculates exact 3D ray-plane intersection with the physical PC display surface.
+        Origin: iPhone TrueDepth front sensor.
+        Returns: Screen pixel coordinates (x, y) or None if parallel/divergent.
+        """
+        if not self.has_physical_pose:
+            return None
+
+        # Rotate world gaze ray by iPhone's physical tilt angle to align with monitor's vertical plane
+        tilt = self.pnp_pitch_rad
+        cos_t = math.cos(tilt)
+        sin_t = math.sin(tilt)
+
+        # Gaze vector in upright monitor space
+        # Y (up) and Z (depth):
+        vy_corr = v_world[1] * cos_t + v_world[2] * sin_t
+        vz_corr = -v_world[1] * sin_t + v_world[2] * cos_t
+        vx_corr = v_world[0]
+
+        # Eye origin in upright monitor space
+        ey_corr = eye_pos_world[1] * cos_t + eye_pos_world[2] * sin_t
+        ez_corr = -eye_pos_world[1] * sin_t + eye_pos_world[2] * cos_t
+        ex_corr = eye_pos_world[0]
+
+        # Distance along ray to monitor plane (which sits at distance pnp_pos_z)
+        target_z = -self.pnp_pos_z
+        denom = vz_corr
+        if abs(denom) < 1e-4:
+            return None
+
+        t = (target_z - ez_corr) / denom
+        if t < 0.05:  # Looking backwards
+            return None
+
+        # 3D intersection point on monitor plane (in meters, origin at monitor base center)
+        hit_x = ex_corr + t * vx_corr - self.pnp_pos_x
+        hit_y = ey_corr + t * vy_corr - self.pnp_pos_y
+
+        # Normalize to screen coordinates [0, 1]
+        norm_x = (hit_x / self.monitor_w_m) + 0.5
+        norm_y = 1.0 - (hit_y / self.monitor_h_m)  # Invert Y for screen top-left origin
+
+        screen_x = norm_x * self.screen_width
+        screen_y = norm_y * self.screen_height
+        return screen_x, screen_y
 
     def compute_world_gaze_ray(self, frame: ARFaceFrame) -> Tuple[np.ndarray, np.ndarray]:
         """
@@ -174,9 +260,16 @@ class GeometryEstimator:
     def estimate_raw_screen_pos(self, frame: ARFaceFrame) -> Tuple[float, float]:
         """
         Estimate 2D screen coordinates using 3D world gaze raycasting.
+        Prioritizes exact physical PnP ray-plane intersection if configured.
         """
         eye_origin, v_world = self.compute_world_gaze_ray(frame)
 
+        if self.has_physical_pose:
+            p_hit = self.compute_physical_ray_intersection(eye_origin, v_world)
+            if p_hit is not None:
+                return p_hit
+
+        # Fallback to empirical projection model
         z_denom = abs(v_world[2]) if abs(v_world[2]) > 0.1 else 0.1
         slope_x = v_world[0] / z_denom
         slope_y = v_world[1] / z_denom

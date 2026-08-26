@@ -1,5 +1,6 @@
 import os
 import sys
+import math
 import numpy as np
 import time
 
@@ -174,6 +175,47 @@ def test_pipeline():
     assert cw.total_samples == 15
     assert len(cw.mouse_trail) == 15
     print("[OK] Active Mouse Calibration sampled 15 live cursor frames cleanly.")
+
+    print("\n=== 7. Test PnP Monitor Spatial Solver & Physical Ray-Intersection ===")
+    from core.pnp_solver import solve_monitor_pnp
+    corners = np.array([
+        [240.0, 120.0],
+        [1040.0, 120.0],
+        [1000.0, 600.0],
+        [280.0, 600.0]
+    ], dtype=np.float32)
+    pose = solve_monitor_pnp(corners, 0.531, 0.299, 1280, 720)
+    assert pose is not None
+    assert pose.pos_z_m > 0.20
+    print(f"[OK] solve_monitor_pnp calculated: {pose.describe()}")
+
+    # Test physical ray-plane intersection injection
+    geo.set_physical_monitor_pose(
+        pos_x_m=pose.pos_x_m,
+        pos_y_m=pose.pos_y_m,
+        pos_z_m=pose.pos_z_m,
+        pitch_deg=pose.pitch_deg,
+        monitor_w_m=pose.monitor_width_m,
+        monitor_h_m=pose.monitor_height_m
+    )
+    assert geo.has_physical_pose
+    p_hit = geo.compute_physical_ray_intersection(np.array([0.0, 0.1, 0.45]), np.array([0.0, 0.0, -1.0]))
+    assert p_hit is not None
+    print(f"[OK] Physical 3D Ray-Intersection computed on screen: ({p_hit[0]:.1f}, {p_hit[1]:.1f})")
+
+    # Test PhotoReceiver start & stop
+    from core.photo_receiver import PhotoReceiver
+    pr = PhotoReceiver(port=5008)
+    assert pr.start()
+    pr.stop()
+    print("[OK] PhotoReceiver started and stopped cleanly.")
+
+    print("\n=== 8. Test Sensor Lab Monitor Inclinometer Ingestion ===")
+    geo.set_sensor_lab_angles(monitor_pitch_deg=85.0, phone_pitch_deg=28.0)
+    assert abs(math.degrees(geo.pnp_pitch_rad) - 33.0) < 1e-3
+    p_hit_sensor = geo.compute_physical_ray_intersection(np.array([0.0, 0.1, 0.45]), np.array([0.0, 0.0, -1.0]))
+    assert p_hit_sensor is not None
+    print(f"[OK] Sensor Lab ray-intersection computed: ({p_hit_sensor[0]:.1f}, {p_hit_sensor[1]:.1f})")
 
     # Clean up test file
     import os

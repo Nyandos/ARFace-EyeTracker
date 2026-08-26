@@ -8,6 +8,8 @@ struct ContentView: View {
     @AppStorage("target_pc_port") private var targetPort: String = "5005"
     @State private var selectedMode: StreamMode = .binary
     @State private var isEcoMode: Bool = false
+    @State private var showPhotoPicker: Bool = false
+    @State private var showSensorLab: Bool = false
 
     var body: some View {
         ZStack {
@@ -235,6 +237,38 @@ struct ContentView: View {
                                     .cornerRadius(6)
                                 }
                             }
+
+                            // 5. 3D Spatial Alignment Photo Capture Button
+                            Button(action: { showPhotoPicker = true }) {
+                                HStack(spacing: 6) {
+                                    Image(systemName: "camera.viewfinder")
+                                    Text("📷 CAPTURE MONITOR PHOTO (3D測定)")
+                                }
+                                .font(.system(size: 11, weight: .bold, design: .monospaced))
+                                .tracking(0.5)
+                                .foregroundColor(Color(red: 199/255, green: 210/255, blue: 254/255))
+                                .frame(maxWidth: .infinity)
+                                .padding(.vertical, 10)
+                                .background(Color(red: 30/255, green: 27/255, blue: 75/255))
+                                .cornerRadius(6)
+                                .overlay(RoundedRectangle(cornerRadius: 6).stroke(Color(red: 99/255, green: 102/255, blue: 241/255), lineWidth: 1))
+                            }
+
+                            // 6. Sensor Lab (Monitor Angle & Levels)
+                            Button(action: { showSensorLab = true }) {
+                                HStack(spacing: 6) {
+                                    Image(systemName: "compass.drawing")
+                                    Text("🧭 SENSOR LAB (モニター角度・水準器)")
+                                }
+                                .font(.system(size: 11, weight: .bold, design: .monospaced))
+                                .tracking(0.5)
+                                .foregroundColor(Color(red: 254/255, green: 240/255, blue: 138/255))
+                                .frame(maxWidth: .infinity)
+                                .padding(.vertical, 10)
+                                .background(Color(red: 66/255, green: 32/255, blue: 6/255).opacity(0.6))
+                                .cornerRadius(6)
+                                .overlay(RoundedRectangle(cornerRadius: 6).stroke(Color(red: 234/255, green: 179/255, blue: 8/255), lineWidth: 1))
+                            }
                         }
 
                         Spacer()
@@ -242,6 +276,14 @@ struct ContentView: View {
                     .padding(.horizontal, 18)
                 }
             }
+        }
+        .sheet(isPresented: $showPhotoPicker) {
+            ImagePickerView(sourceType: .camera) { image in
+                uploadPhotoToPC(image: image)
+            }
+        }
+        .sheet(isPresented: $showSensorLab) {
+            SensorLabView(targetIP: targetIP)
         }
     }
 
@@ -251,6 +293,65 @@ struct ContentView: View {
         } else {
             let port = UInt16(targetPort) ?? 5005
             sender.startTracking(targetIP: targetIP, targetPort: port, mode: selectedMode)
+        }
+    }
+
+    private func uploadPhotoToPC(image: UIImage) {
+        guard let jpegData = image.jpegData(compressionQuality: 0.82),
+              let url = URL(string: "http://\(targetIP):5006/upload_photo") else { return }
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("image/jpeg", forHTTPHeaderField: "Content-Type")
+        request.httpBody = jpegData
+        URLSession.shared.dataTask(with: request) { _, _, error in
+            if let error = error {
+                print("[iOS] Photo upload failed: \(error)")
+            } else {
+                print("[iOS] Monitor photo successfully uploaded to PC!")
+            }
+        }.resume()
+    }
+}
+
+/// Simple UIKit Camera / Photo Picker Sheet for SwiftUI
+struct ImagePickerView: UIViewControllerRepresentable {
+    var sourceType: UIImagePickerController.SourceType = .camera
+    var onImagePicked: (UIImage) -> Void
+    @Environment(\.presentationMode) private var presentationMode
+
+    func makeUIViewController(context: Context) -> UIImagePickerController {
+        let picker = UIImagePickerController()
+        if UIImagePickerController.isSourceTypeAvailable(sourceType) {
+            picker.sourceType = sourceType
+        } else {
+            picker.sourceType = .photoLibrary
+        }
+        picker.delegate = context.coordinator
+        return picker
+    }
+
+    func updateUIViewController(_ uiViewController: UIImagePickerController, context: Context) {}
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator(self)
+    }
+
+    class Coordinator: NSObject, UIImagePickerControllerDelegate, UINavigationControllerDelegate {
+        let parent: ImagePickerView
+
+        init(_ parent: ImagePickerView) {
+            self.parent = parent
+        }
+
+        func imagePickerController(_ picker: UIImagePickerController, didFinishPickingMediaWithInfo info: [UIImagePickerController.InfoKey : Any]) {
+            if let image = info[.originalImage] as? UIImage {
+                parent.onImagePicked(image)
+            }
+            parent.presentationMode.wrappedValue.dismiss()
+        }
+
+        func imagePickerControllerDidCancel(_ picker: UIImagePickerController) {
+            parent.presentationMode.wrappedValue.dismiss()
         }
     }
 }

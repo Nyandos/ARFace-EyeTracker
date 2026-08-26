@@ -22,6 +22,10 @@
     <true/>
     <key>NSCameraUsageDescription</key>
     <string>FaceID TrueDepthカメラを用いて顔の3Dポーズおよび視線方向をトラッキングし、PCへUDPストリーミングするために使用します。</string>
+    <key>NSMotionUsageDescription</key>
+    <string>モニターの設置角度およびデバイスの傾きを高精度に計測するためにモーションセンサーを使用します。</string>
+    <key>NSPhotoLibraryUsageDescription</key>
+    <string>モニター位置のアライメント写真を選択するためにフォトライブラリを使用します。</string>
     <key>NSLocalNetworkUsageDescription</key>
     <string>同一ローカルネットワーク上のPCへ低遅延UDPで視線生データをストリーミングするために使用します。</string>
     <key>UIRequiredDeviceCapabilities</key>

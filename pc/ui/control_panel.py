@@ -2,12 +2,13 @@ import sys
 import os
 import math
 import socket
+import numpy as np
 from typing import Optional, List, Tuple, Dict
 from PyQt6.QtCore import Qt, QTimer, pyqtSlot, pyqtSignal, QPointF
 from PyQt6.QtGui import QColor, QFont, QPainter, QBrush, QPen
 from PyQt6.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QGridLayout, QLabel, 
-    QPushButton, QSlider, QComboBox, QFrame, QTabWidget, QProgressBar
+    QPushButton, QSlider, QComboBox, QFrame, QTabWidget, QProgressBar, QScrollArea
 )
 from core.receiver import UDPReceiver
 from core.calibrator import Calibrator
@@ -15,6 +16,8 @@ from core.geometry import GeometryEstimator
 from .hud_overlay import HUDOverlay
 from .calib_window import CalibrationWindow
 from .face_preview import FacePreviewWidget
+from .spatial_alignment_dialog import SpatialAlignmentDialog
+from core.photo_receiver import PhotoReceiver
 
 # -------------------------------------------------------------------------
 # Hallmark "Tally" Preset Design Tokens (Modern-Minimal / High-Utility Dark)
@@ -101,7 +104,8 @@ QPushButton {
     background-color: #1f2937;
     border: 1px solid #374151;
     border-radius: 6px;
-    padding: 7px 14px;
+    padding: 6px 14px;
+    min-height: 32px;
     font-weight: 600;
     font-size: 12px;
     color: #f3f4f6;
@@ -125,7 +129,7 @@ QPushButton:disabled {
     color: #4b5563;
 }
 
-/* Primary Action Button */
+/* Primary Action Button (Blue) */
 QPushButton.tally-primary-btn {
     background-color: #0284c7;
     border: 1px solid #38bdf8;
@@ -135,42 +139,61 @@ QPushButton.tally-primary-btn:hover {
     background-color: #0369a1;
     border-color: #7dd3fc;
 }
-QPushButton.tally-primary-btn:pressed {
-    background-color: #0c4a6e;
-}
 
-/* Accent Action (Calibration) */
+/* Accent Action (Emerald / 9-Point Calib) */
 QPushButton.tally-accent-btn {
     background-color: #059669;
     border: 1px solid #34d399;
     color: #ffffff;
+    font-weight: 700;
 }
 QPushButton.tally-accent-btn:hover {
     background-color: #047857;
     border-color: #6ee7b7;
 }
-QPushButton.tally-accent-btn:pressed {
-    background-color: #064e3b;
+
+/* Teal Button (Active Mouse) */
+QPushButton.tally-teal-btn {
+    background-color: #0f766e;
+    border: 1px solid #2dd4bf;
+    color: #ffffff;
+    font-weight: 700;
+}
+QPushButton.tally-teal-btn:hover {
+    background-color: #115e59;
+    border-color: #5eead4;
+}
+
+/* Purple Button (3D Spatial Alignment) */
+QPushButton.tally-purple-btn {
+    background-color: #2e1065;
+    border: 1px solid #8b5cf6;
+    color: #ede9fe;
+    font-weight: 700;
+}
+QPushButton.tally-purple-btn:hover {
+    background-color: #3b0764;
+    border-color: #a78bfa;
 }
 
 /* Sliders */
 QSlider::groove:horizontal {
-    height: 4px;
+    height: 6px;
     background: #1f2937;
-    border-radius: 2px;
+    border-radius: 3px;
 }
 QSlider::sub-page:horizontal {
     background: #0284c7;
-    border-radius: 2px;
+    border-radius: 3px;
 }
 QSlider::handle:horizontal {
     background: #f9fafb;
     border: 2px solid #0284c7;
-    width: 14px;
-    height: 14px;
+    width: 16px;
+    height: 16px;
     margin-top: -5px;
     margin-bottom: -5px;
-    border-radius: 7px;
+    border-radius: 8px;
 }
 QSlider::handle:horizontal:hover {
     background: #ffffff;
@@ -182,9 +205,11 @@ QComboBox {
     background-color: #1f2937;
     border: 1px solid #374151;
     border-radius: 6px;
-    padding: 5px 10px;
+    padding: 4px 10px;
+    min-height: 28px;
     color: #f3f4f6;
     font-weight: 500;
+    font-size: 11px;
 }
 QComboBox:hover {
     border-color: #4b5563;
@@ -194,7 +219,7 @@ QComboBox:focus {
 }
 QComboBox::drop-down {
     border: none;
-    width: 20px;
+    width: 24px;
 }
 QComboBox QAbstractItemView {
     background-color: #111827;
@@ -203,6 +228,28 @@ QComboBox QAbstractItemView {
     selection-color: #ffffff;
     color: #f3f4f6;
     padding: 4px;
+}
+
+/* Scroll Area */
+QScrollArea {
+    border: none;
+    background-color: transparent;
+}
+QScrollBar:vertical {
+    background: #0b0f17;
+    width: 8px;
+    margin: 0px;
+}
+QScrollBar::handle:vertical {
+    background: #1f2937;
+    min-height: 24px;
+    border-radius: 4px;
+}
+QScrollBar::handle:vertical:hover {
+    background: #374151;
+}
+QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {
+    height: 0px;
 }
 """
 
@@ -266,10 +313,18 @@ class ControlPanel(QMainWindow):
         self.geometry = geometry or calibrator.geometry
 
         self.setWindowTitle("ARFace-Eyetracker — Control Center")
-        self.setFixedSize(640, 780)
+        self.resize(680, 920)
+        self.setMinimumSize(600, 720)
         self.setStyleSheet(TALLY_STYLE)
 
         self._init_ui()
+
+        # Photo & Sensor Receiver Server for PnP Spatial Calibration
+        self.photo_receiver = PhotoReceiver(port=5006)
+        self.photo_receiver.photo_received.connect(self._on_photo_received)
+        self.photo_receiver.sensor_data_received.connect(self._on_sensor_data_received)
+        self.photo_receiver.start()
+        self.spatial_dialog: Optional[SpatialAlignmentDialog] = None
 
         # Signals
         self.calib_win.calibration_finished.connect(self._on_calibration_finished)
@@ -304,21 +359,22 @@ class ControlPanel(QMainWindow):
 
         # Status Tag Badge
         self.badge_frame = QFrame()
+        self.badge_frame.setMinimumWidth(160)
         self.badge_frame.setStyleSheet("""
             QFrame {
                 background-color: #111827;
                 border: 1px solid #1f2937;
-                border-radius: 16px;
-                padding: 4px 10px;
+                border-radius: 14px;
+                padding: 2px 8px;
             }
         """)
         badge_layout = QHBoxLayout(self.badge_frame)
-        badge_layout.setContentsMargins(6, 3, 8, 3)
-        badge_layout.setSpacing(6)
+        badge_layout.setContentsMargins(10, 4, 12, 4)
+        badge_layout.setSpacing(8)
         
         self.live_indicator = LiveIndicator()
         self.badge_text = QLabel("STANDBY")
-        self.badge_text.setStyleSheet("font-size: 11px; font-weight: 700; color: #9ca3af; letter-spacing: 0.5px;")
+        self.badge_text.setStyleSheet("font-size: 11px; font-weight: 700; color: #9ca3af; letter-spacing: 0.8px;")
         badge_layout.addWidget(self.live_indicator)
         badge_layout.addWidget(self.badge_text)
         header_bar.addWidget(self.badge_frame)
@@ -347,8 +403,12 @@ class ControlPanel(QMainWindow):
 
     def _init_tab_controls(self):
         """Tab 1: Main Controls, Calibration, HUD Display Settings"""
-        tab = QWidget()
-        layout = QVBoxLayout(tab)
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+
+        tab_widget = QWidget()
+        layout = QVBoxLayout(tab_widget)
         layout.setContentsMargins(14, 14, 14, 14)
         layout.setSpacing(12)
 
@@ -446,32 +506,23 @@ class ControlPanel(QMainWindow):
         self.start_calib_btn.clicked.connect(self._start_calibration)
 
         self.active_mouse_btn = QPushButton("🖱️ ACTIVE MOUSE (10s)")
-        self.active_mouse_btn.setStyleSheet("""
-            QPushButton {
-                background-color: #0d9488;
-                border: 1px solid #2dd4bf;
-                color: #ffffff;
-                font-weight: 700;
-                border-radius: 6px;
-                padding: 7px 12px;
-            }
-            QPushButton:hover {
-                background-color: #0f766e;
-                border-color: #5eead4;
-            }
-            QPushButton:pressed {
-                background-color: #115e59;
-            }
-        """)
+        self.active_mouse_btn.setProperty("class", "tally-teal-btn")
         self.active_mouse_btn.clicked.connect(self._start_active_mouse_calibration)
 
         self.reset_calib_btn = QPushButton("Reset")
         self.reset_calib_btn.clicked.connect(self._reset_calibration)
 
-        calib_btns.addWidget(self.start_calib_btn, stretch=4)
-        calib_btns.addWidget(self.active_mouse_btn, stretch=4)
+        calib_btns.addWidget(self.start_calib_btn, stretch=5)
+        calib_btns.addWidget(self.active_mouse_btn, stretch=5)
         calib_btns.addWidget(self.reset_calib_btn, stretch=2)
         calib_layout.addLayout(calib_btns)
+
+        pnp_btn_row = QHBoxLayout()
+        self.pnp_spatial_btn = QPushButton("📐 3D SPATIAL ALIGNMENT (モニター写真測定)")
+        self.pnp_spatial_btn.setProperty("class", "tally-purple-btn")
+        self.pnp_spatial_btn.clicked.connect(self._open_spatial_alignment_dialog)
+        pnp_btn_row.addWidget(self.pnp_spatial_btn)
+        calib_layout.addLayout(pnp_btn_row)
 
         # Head-Gaze Hybrid Boost Slider
         boost_row = QHBoxLayout()
@@ -563,12 +614,17 @@ class ControlPanel(QMainWindow):
         layout.addWidget(opt_card)
 
         layout.addStretch()
-        self.tabs.addTab(tab, "🎛️ CONTROLS & CALIB")
+        scroll.setWidget(tab_widget)
+        self.tabs.addTab(scroll, "🎛️ CONTROLS && CALIB")
 
     def _init_tab_inspector(self):
         """Tab 2: 3D Face Wireframe Preview & Full Data Debug Inspector"""
-        tab = QWidget()
-        layout = QVBoxLayout(tab)
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+
+        tab_widget = QWidget()
+        layout = QVBoxLayout(tab_widget)
         layout.setContentsMargins(14, 14, 14, 14)
         layout.setSpacing(10)
 
@@ -661,7 +717,8 @@ class ControlPanel(QMainWindow):
         layout.addWidget(debug_card)
         layout.addStretch()
 
-        self.tabs.addTab(tab, "👤 3D FACE & DATA DEBUG")
+        scroll.setWidget(tab_widget)
+        self.tabs.addTab(scroll, "👤 3D FACE && DATA DEBUG")
 
     def _update_telemetry(self):
         connected = self.receiver.is_connected()
@@ -731,6 +788,31 @@ class ControlPanel(QMainWindow):
 
     def _start_active_mouse_calibration(self):
         self.calib_win.start_active_mouse_calibration()
+
+    def _open_spatial_alignment_dialog(self):
+        if not self.spatial_dialog:
+            self.spatial_dialog = SpatialAlignmentDialog(self.geometry, self)
+        self.spatial_dialog.show()
+        self.spatial_dialog.raise_()
+        self.spatial_dialog.activateWindow()
+
+    def _on_photo_received(self, img_arr: np.ndarray):
+        if not self.spatial_dialog:
+            self.spatial_dialog = SpatialAlignmentDialog(self.geometry, self)
+        self.spatial_dialog.feed_photo(img_arr)
+
+    def _on_sensor_data_received(self, data: dict):
+        m_pitch = float(data.get("monitor_pitch_deg", 90.0))
+        p_pitch = float(data.get("phone_pitch_deg", 25.0))
+        rel_angle = float(data.get("relative_angle_deg", abs(m_pitch - p_pitch)))
+        self.geometry.set_sensor_lab_angles(m_pitch, p_pitch)
+        self.calib_notice_lbl.setText(f"📐 センサー同期完了: モニター {m_pitch:.1f}° | iPhone {p_pitch:.1f}° (交差 {rel_angle:.1f}°)")
+        self.calib_notice_lbl.setStyleSheet("color: #38bdf8; font-size: 11px; font-weight: 700;")
+
+    def closeEvent(self, event):
+        if hasattr(self, 'photo_receiver') and self.photo_receiver:
+            self.photo_receiver.stop()
+        super().closeEvent(event)
 
     def _on_calibration_finished(self, success: bool):
         if success:
