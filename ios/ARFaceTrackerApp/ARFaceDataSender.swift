@@ -132,6 +132,16 @@ class ARFaceDataSender: NSObject, ObservableObject, ARSessionDelegate {
         }
     }
 
+    // MARK: - Helper Methods
+    private func extractRotationQuat(_ m: simd_float4x4) -> simd_quatf {
+        let rot3x3 = simd_float3x3(
+            simd_float3(m.columns.0.x, m.columns.0.y, m.columns.0.z),
+            simd_float3(m.columns.1.x, m.columns.1.y, m.columns.1.z),
+            simd_float3(m.columns.2.x, m.columns.2.y, m.columns.2.z)
+        )
+        return simd_quatf(rot3x3)
+    }
+
     // MARK: - Raw JSON Stream (All 52 BlendShapes + Matrices + Vectors)
     private func sendRawJSONData(faceAnchor: ARFaceAnchor) {
         guard let connection = self.connection else { return }
@@ -139,7 +149,7 @@ class ARFaceDataSender: NSObject, ObservableObject, ARSessionDelegate {
         let now = Date().timeIntervalSince1970
         let transform = faceAnchor.transform
         let headPos = simd_float3(transform.columns.3.x, transform.columns.3.y, transform.columns.3.z)
-        let headRot = simd_quatf(transform)
+        let headRot = extractRotationQuat(transform)
 
         let leftLook = faceAnchor.leftEyeTransform.columns.2
         let rightLook = faceAnchor.rightEyeTransform.columns.2
@@ -213,7 +223,7 @@ class ARFaceDataSender: NSObject, ObservableObject, ARSessionDelegate {
         let now = Date().timeIntervalSince1970
         let transform = faceAnchor.transform
         let headPos = simd_float3(transform.columns.3.x, transform.columns.3.y, transform.columns.3.z)
-        let headRot = simd_quatf(transform)
+        let headRot = extractRotationQuat(transform)
 
         let leftLook = faceAnchor.leftEyeTransform.columns.2
         let rightLook = faceAnchor.rightEyeTransform.columns.2
@@ -229,8 +239,7 @@ class ARFaceDataSender: NSObject, ObservableObject, ARSessionDelegate {
         data.append(contentsOf: magicHeader) // 4 bytes
 
         // timestamp: Double (8 bytes)
-        var tsBE = now.bitPattern.bigEndian
-        data.append(UnsafeBufferPointer(start: &tsBE, count: 1))
+        appendDoubleBE(&data, now)
 
         // head_pos: 3x Float (12 bytes)
         appendFloatBE(&data, headPos.x)
@@ -270,7 +279,16 @@ class ARFaceDataSender: NSObject, ObservableObject, ARSessionDelegate {
 
     private func appendFloatBE(_ data: inout Data, _ value: Float) {
         var be = value.bitPattern.bigEndian
-        data.append(UnsafeBufferPointer(start: &be, count: 1))
+        withUnsafeBytes(of: &be) { buffer in
+            data.append(contentsOf: buffer)
+        }
+    }
+
+    private func appendDoubleBE(_ data: inout Data, _ value: Double) {
+        var be = value.bitPattern.bigEndian
+        withUnsafeBytes(of: &be) { buffer in
+            data.append(contentsOf: buffer)
+        }
     }
 
     private func updateFpsCounter() {
