@@ -1,6 +1,14 @@
 import sys
 import os
 
+# Optimize Windows Timer Resolution to 1ms for ultra-low latency 60Hz-240Hz tracking
+if sys.platform == "win32":
+    try:
+        import ctypes
+        ctypes.windll.winmm.timeBeginPeriod(1)
+    except Exception:
+        pass
+
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from PyQt6.QtWidgets import QApplication
 from screeninfo import get_monitors

@@ -18,8 +18,17 @@ def run_mock_sender(host: str = "127.0.0.1", port: int = 5005, target_fps: float
     print(f"[MockSender] Sending simulated ARKit TrueDepth packets ({mode.upper()}) to {host}:{port} @ {target_fps} FPS")
     print("[MockSender] Press Ctrl+C to stop.")
 
+    # Enable 1ms Windows timer resolution
+    if sys.platform == "win32":
+        try:
+            import ctypes
+            ctypes.windll.winmm.timeBeginPeriod(1)
+        except Exception:
+            pass
+
     start_time = time.perf_counter()
     interval = 1.0 / target_fps
+    next_send_time = start_time
     seq = 0
 
     try:
@@ -113,7 +122,12 @@ def run_mock_sender(host: str = "127.0.0.1", port: int = 5005, target_fps: float
             sock.sendto(packet, (host, port))
             seq += 1
 
-            time.sleep(interval)
+            next_send_time += interval
+            sleep_dur = next_send_time - time.perf_counter()
+            if sleep_dur > 0.001:
+                time.sleep(sleep_dur)
+            while time.perf_counter() < next_send_time:
+                pass
     except KeyboardInterrupt:
         print("\n[MockSender] Stopped.")
 

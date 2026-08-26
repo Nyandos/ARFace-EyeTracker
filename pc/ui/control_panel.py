@@ -1,18 +1,20 @@
 import sys
 import os
+import math
 import socket
 from typing import Optional, List, Tuple, Dict
 from PyQt6.QtCore import Qt, QTimer, pyqtSlot, pyqtSignal, QPointF
 from PyQt6.QtGui import QColor, QFont, QPainter, QBrush, QPen
 from PyQt6.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QGridLayout, QLabel, 
-    QPushButton, QSlider, QComboBox, QFrame, QTabWidget
+    QPushButton, QSlider, QComboBox, QFrame, QTabWidget, QProgressBar
 )
 from core.receiver import UDPReceiver
 from core.calibrator import Calibrator
 from core.geometry import GeometryEstimator
 from .hud_overlay import HUDOverlay
 from .calib_window import CalibrationWindow
+from .face_preview import FacePreviewWidget
 
 # -------------------------------------------------------------------------
 # Hallmark "Tally" Preset Design Tokens (Modern-Minimal / High-Utility Dark)
@@ -26,6 +28,37 @@ QWidget {
     color: #f3f4f6;
     font-family: 'Segoe UI', -apple-system, 'Inter', sans-serif;
     font-size: 12px;
+}
+
+/* Tabs */
+QTabWidget::pane {
+    border: 1px solid #1f2937;
+    background-color: #0b0f17;
+    border-radius: 8px;
+    top: -1px;
+}
+QTabBar::tab {
+    background-color: #111827;
+    color: #9ca3af;
+    border: 1px solid #1f2937;
+    border-bottom: none;
+    border-top-left-radius: 6px;
+    border-top-right-radius: 6px;
+    padding: 8px 18px;
+    font-weight: 600;
+    font-size: 11px;
+    letter-spacing: 0.5px;
+    margin-right: 4px;
+}
+QTabBar::tab:selected {
+    background-color: #161f30;
+    color: #38bdf8;
+    border-color: #38bdf8;
+    border-bottom: 2px solid #38bdf8;
+}
+QTabBar::tab:hover:!selected {
+    background-color: #1f2937;
+    color: #f3f4f6;
 }
 
 /* Surface Cards */
@@ -200,9 +233,7 @@ def get_local_ip() -> str:
 
 
 class LiveIndicator(QWidget):
-    """
-    Minimalist LED Pulse Indicator (Tally Style)
-    """
+    """Minimalist LED Pulse Indicator"""
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setFixedSize(10, 10)
@@ -216,9 +247,7 @@ class LiveIndicator(QWidget):
     def paintEvent(self, event):
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-        
         color = QColor(16, 185, 129) if self.is_active else QColor(239, 68, 68)
-        # Core dot
         painter.setPen(Qt.PenStyle.NoPen)
         painter.setBrush(QBrush(color))
         painter.drawEllipse(1, 1, 8, 8)
@@ -226,8 +255,7 @@ class LiveIndicator(QWidget):
 
 class ControlPanel(QMainWindow):
     """
-    Hallmark 'Tally' Redesigned Control Panel.
-    High-density, structured, honest-copy utility GUI for ARFace-Eyetracker.
+    Hallmark 'Tally' Control Center with 3D Face Wireframe & Data Debug Inspector.
     """
     def __init__(self, receiver: UDPReceiver, calibrator: Calibrator, hud: HUDOverlay, calib_win: CalibrationWindow, geometry: Optional[GeometryEstimator] = None):
         super().__init__()
@@ -238,7 +266,7 @@ class ControlPanel(QMainWindow):
         self.geometry = geometry or calibrator.geometry
 
         self.setWindowTitle("ARFace-Eyetracker — Control Center")
-        self.setFixedSize(580, 690)
+        self.setFixedSize(640, 780)
         self.setStyleSheet(TALLY_STYLE)
 
         self._init_ui()
@@ -246,23 +274,22 @@ class ControlPanel(QMainWindow):
         # Signals
         self.calib_win.calibration_finished.connect(self._on_calibration_finished)
 
-        # 10Hz Status Polling
+        # 30Hz Telemetry & Inspector Polling (smooth 3D wireframe animation)
         self.status_timer = QTimer(self)
         self.status_timer.timeout.connect(self._update_telemetry)
-        self.status_timer.start(100)
+        self.status_timer.start(33)
 
     def _init_ui(self):
         central_widget = QWidget(self)
         self.setCentralWidget(central_widget)
         main_layout = QVBoxLayout(central_widget)
-        main_layout.setContentsMargins(20, 18, 20, 20)
-        main_layout.setSpacing(14)
+        main_layout.setContentsMargins(18, 16, 18, 16)
+        main_layout.setSpacing(12)
 
         # ---------------------------------------------------------
-        # Top Header Bar: Title + Connection Badge + Quick Actions
+        # Header Bar
         # ---------------------------------------------------------
         header_bar = QHBoxLayout()
-        
         title_col = QVBoxLayout()
         title_col.setSpacing(2)
         title_lbl = QLabel("ARFACE // EYETRACKER")
@@ -299,16 +326,40 @@ class ControlPanel(QMainWindow):
         main_layout.addLayout(header_bar)
 
         # ---------------------------------------------------------
-        # Section 1: Telemetry & Network Feed (High-Density Grid)
+        # Tab Widget Container
         # ---------------------------------------------------------
+        self.tabs = QTabWidget()
+        main_layout.addWidget(self.tabs)
+
+        # Build Tabs
+        self._init_tab_controls()
+        self._init_tab_inspector()
+
+        # ---------------------------------------------------------
+        # Bottom Utility Bar (Overlay Toggle & Status)
+        # ---------------------------------------------------------
+        bottom_bar = QHBoxLayout()
+        self.hud_toggle_btn = QPushButton("HUD Overlay: Visible")
+        self.hud_toggle_btn.clicked.connect(self._toggle_hud)
+        bottom_bar.addWidget(self.hud_toggle_btn)
+
+        main_layout.addLayout(bottom_bar)
+
+    def _init_tab_controls(self):
+        """Tab 1: Main Controls, Calibration, HUD Display Settings"""
+        tab = QWidget()
+        layout = QVBoxLayout(tab)
+        layout.setContentsMargins(14, 14, 14, 14)
+        layout.setSpacing(12)
+
+        # 1. Telemetry Ingest Card
         feed_card = QFrame()
         feed_card.setProperty("class", "tally-card")
         feed_layout = QVBoxLayout(feed_card)
-        feed_layout.setSpacing(10)
+        feed_layout.setSpacing(8)
 
-        # Header of Feed
         feed_head = QHBoxLayout()
-        feed_title = QLabel("TELEMETRY & INGEST")
+        feed_title = QLabel("INGEST ENDPOINT")
         feed_title.setProperty("class", "tally-section-title")
         local_ip = get_local_ip()
         self.ip_display = QLabel(f"UDP Target: {local_ip}:{self.receiver.port}")
@@ -318,11 +369,9 @@ class ControlPanel(QMainWindow):
         feed_head.addWidget(self.ip_display)
         feed_layout.addLayout(feed_head)
 
-        # Port Selector row (Standard 5005 vs iFacialMocap 49983)
         port_row = QHBoxLayout()
         port_lbl = QLabel("Ingest Port:")
         port_lbl.setStyleSheet("color: #9ca3af; font-size: 11px;")
-        
         self.btn_port_5005 = QPushButton("5005 (Standard)")
         self.btn_port_5005.setProperty("class", "tally-primary-btn" if self.receiver.port == 5005 else "")
         self.btn_port_5005.clicked.connect(lambda: self._switch_port(5005))
@@ -337,10 +386,9 @@ class ControlPanel(QMainWindow):
         port_row.addStretch()
         feed_layout.addLayout(port_row)
 
-        # Metric Columns (Rate, Packets, Head Pose, Gaze Ray)
+        # Metric Columns (FPS Rate, Total Packets)
         metrics_grid = QGridLayout()
-        metrics_grid.setHorizontalSpacing(14)
-        metrics_grid.setVerticalSpacing(8)
+        metrics_grid.setHorizontalSpacing(10)
 
         # Box 1: FPS Rate
         b1 = QFrame()
@@ -348,7 +396,7 @@ class ControlPanel(QMainWindow):
         b1_l = QVBoxLayout(b1)
         b1_l.setContentsMargins(10, 8, 10, 8)
         b1_lbl = QLabel("STREAM RATE")
-        b1_lbl.setStyleSheet("font-size: 10px; font-weight: 600; color: #9ca3af;")
+        b1_lbl.setProperty("class", "tally-section-title")
         self.fps_val = QLabel("0.0 FPS")
         self.fps_val.setProperty("class", "tally-metric-large")
         b1_l.addWidget(b1_lbl)
@@ -360,8 +408,8 @@ class ControlPanel(QMainWindow):
         b2.setProperty("class", "tally-card-elevated")
         b2_l = QVBoxLayout(b2)
         b2_l.setContentsMargins(10, 8, 10, 8)
-        b2_lbl = QLabel("PACKETS RECEIVED")
-        b2_lbl.setStyleSheet("font-size: 10px; font-weight: 600; color: #9ca3af;")
+        b2_lbl = QLabel("PACKETS INGESTED")
+        b2_lbl.setProperty("class", "tally-section-title")
         self.packets_val = QLabel("0")
         self.packets_val.setProperty("class", "tally-metric-large")
         b2_l.addWidget(b2_lbl)
@@ -369,165 +417,261 @@ class ControlPanel(QMainWindow):
         metrics_grid.addWidget(b2, 0, 1)
 
         feed_layout.addLayout(metrics_grid)
+        layout.addWidget(feed_card)
 
-        # 3D Vector Readout Row
-        vec_row = QHBoxLayout()
-        self.head_vec_lbl = QLabel("Head Pose: X:+0.00 Y:+0.00 Z:+0.00m")
-        self.head_vec_lbl.setProperty("class", "tally-value-mono")
-        self.head_vec_lbl.setStyleSheet("color: #9ca3af; font-size: 11px;")
-        
-        self.gaze_signal_lbl = QLabel("Eye Signal: WAITING...")
-        self.gaze_signal_lbl.setProperty("class", "tally-value-mono")
-        self.gaze_signal_lbl.setStyleSheet("color: #38bdf8; font-size: 11px; font-weight: 600;")
-
-        vec_row.addWidget(self.head_vec_lbl)
-        vec_row.addStretch()
-        vec_row.addWidget(self.gaze_signal_lbl)
-        feed_layout.addLayout(vec_row)
-
-        # Raw Packet Stream Inspector (for troubleshooting)
-        self.raw_packet_lbl = QLabel("Raw Feed: [ Waiting for UDP stream... ]")
-        self.raw_packet_lbl.setProperty("class", "tally-value-mono")
-        self.raw_packet_lbl.setStyleSheet("color: #6b7280; font-size: 10px; background-color: #0b0f17; padding: 4px 8px; border-radius: 4px;")
-        feed_layout.addWidget(self.raw_packet_lbl)
-
-        main_layout.addWidget(feed_card)
-
-        # ---------------------------------------------------------
-        # Section 2: Spatial Calibration (9-Point Solver)
-        # ---------------------------------------------------------
+        # 2. Calibration Section
         calib_card = QFrame()
         calib_card.setProperty("class", "tally-card")
         calib_layout = QVBoxLayout(calib_card)
         calib_layout.setSpacing(10)
 
         calib_head = QHBoxLayout()
-        calib_title = QLabel("GEOMETRIC CALIBRATION")
+        calib_title = QLabel("3D SPATIAL CALIBRATION")
         calib_title.setProperty("class", "tally-section-title")
-        self.calib_status_badge = QLabel(
-            "[ ACTIVE MATRIX ]" if self.calibrator.is_calibrated else "[ DEFAULT PROJECTION ]"
-        )
-        self.calib_status_badge.setStyleSheet(
-            "font-family: monospace; font-size: 11px; font-weight: 700; color: #10b981;" if self.calibrator.is_calibrated
-            else "font-family: monospace; font-size: 11px; font-weight: 700; color: #f59e0b;"
-        )
+        self.calib_status_badge = QLabel("[ ACTIVE MATRIX ]" if self.calibrator.is_calibrated else "[ DEFAULT PROJECTION ]")
+        self.calib_status_badge.setStyleSheet("font-family: monospace; font-size: 11px; font-weight: 700; color: #10b981;" if self.calibrator.is_calibrated else "font-family: monospace; font-size: 11px; font-weight: 700; color: #f59e0b;")
         calib_head.addWidget(calib_title)
         calib_head.addStretch()
         calib_head.addWidget(self.calib_status_badge)
         calib_layout.addLayout(calib_head)
 
-        calib_actions = QHBoxLayout()
-        self.calib_start_btn = QPushButton("Execute 3D Multi-Pose Calibration (Grid + Head-Tilt)")
-        self.calib_start_btn.setProperty("class", "tally-accent-btn")
-        self.calib_start_btn.clicked.connect(self._start_calibration)
-        calib_actions.addWidget(self.calib_start_btn, 3)
+        calib_desc = QLabel("【9点静止メッシュ】四隅・端・中央を各0.8秒注視して誤差0写像（推奨・約10秒）\n【ACTIVE MOUSE】マウスを自由に見つめて10秒間で即座に微調整・最適化")
+        calib_desc.setStyleSheet("color: #9ca3af; font-size: 11px; margin-bottom: 2px;")
+        calib_desc.setWordWrap(True)
+        calib_layout.addWidget(calib_desc)
 
-        self.calib_reset_btn = QPushButton("Reset Matrix")
-        self.calib_reset_btn.clicked.connect(self._reset_calibration)
-        calib_actions.addWidget(self.calib_reset_btn, 1)
-        calib_layout.addLayout(calib_actions)
+        calib_btns = QHBoxLayout()
+        self.start_calib_btn = QPushButton("🎯 9-POINT MESH (10s)")
+        self.start_calib_btn.setProperty("class", "tally-accent-btn")
+        self.start_calib_btn.clicked.connect(self._start_calibration)
 
-        self.calib_notice_lbl = QLabel("")
-        self.calib_notice_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.active_mouse_btn = QPushButton("🖱️ ACTIVE MOUSE (10s)")
+        self.active_mouse_btn.setStyleSheet("""
+            QPushButton {
+                background-color: #0d9488;
+                border: 1px solid #2dd4bf;
+                color: #ffffff;
+                font-weight: 700;
+                border-radius: 6px;
+                padding: 7px 12px;
+            }
+            QPushButton:hover {
+                background-color: #0f766e;
+                border-color: #5eead4;
+            }
+            QPushButton:pressed {
+                background-color: #115e59;
+            }
+        """)
+        self.active_mouse_btn.clicked.connect(self._start_active_mouse_calibration)
+
+        self.reset_calib_btn = QPushButton("Reset")
+        self.reset_calib_btn.clicked.connect(self._reset_calibration)
+
+        calib_btns.addWidget(self.start_calib_btn, stretch=4)
+        calib_btns.addWidget(self.active_mouse_btn, stretch=4)
+        calib_btns.addWidget(self.reset_calib_btn, stretch=2)
+        calib_layout.addLayout(calib_btns)
+
+        # Head-Gaze Hybrid Boost Slider
+        boost_row = QHBoxLayout()
+        boost_lbl = QLabel("首振り端部ブースト (Extended Reach):")
+        boost_lbl.setStyleSheet("color: #d1d5db; font-size: 11px;")
+        self.boost_val_lbl = QLabel(f"{int(self.calibrator.hybrid_boost_gain * 100)}%")
+        self.boost_val_lbl.setProperty("class", "tally-value-mono")
+
+        self.boost_slider = QSlider(Qt.Orientation.Horizontal)
+        self.boost_slider.setRange(0, 200)
+        self.boost_slider.setValue(int(self.calibrator.hybrid_boost_gain * 100))
+        self.boost_slider.valueChanged.connect(self._on_boost_slider_changed)
+
+        boost_row.addWidget(boost_lbl)
+        boost_row.addWidget(self.boost_slider, stretch=1)
+        boost_row.addWidget(self.boost_val_lbl)
+        calib_layout.addLayout(boost_row)
+
+        self.calib_notice_lbl = QLabel("Matrix loaded from calibration_data.json" if self.calibrator.is_calibrated else "No calibration profile active")
+        self.calib_notice_lbl.setStyleSheet("color: #6b7280; font-size: 10px;")
         calib_layout.addWidget(self.calib_notice_lbl)
 
-        main_layout.addWidget(calib_card)
+        layout.addWidget(calib_card)
 
-        # ---------------------------------------------------------
-        # Section 3: Overlay Appearance & Dynamic Filtering
-        # ---------------------------------------------------------
+        # 3. HUD Customization Options
         opt_card = QFrame()
         opt_card.setProperty("class", "tally-card")
         opt_layout = QVBoxLayout(opt_card)
-        opt_layout.setSpacing(12)
+        opt_layout.setSpacing(10)
 
-        opt_title = QLabel("RENDERER & 1€ FILTER DYNAMICS")
+        opt_title = QLabel("HUD OVERLAY & FILTER OPTICS")
         opt_title.setProperty("class", "tally-section-title")
         opt_layout.addWidget(opt_title)
 
-        # Palette & Filter Selectors Row
-        selectors_grid = QGridLayout()
-        selectors_grid.setHorizontalSpacing(14)
-        selectors_grid.setVerticalSpacing(8)
+        grid = QGridLayout()
+        grid.setHorizontalSpacing(10)
+        grid.setVerticalSpacing(8)
 
-        # Theme Selector
-        selectors_grid.addWidget(QLabel("Reticle Palette:"), 0, 0)
+        # Reticle Color
+        grid.addWidget(QLabel("Color Theme:"), 0, 0)
         self.color_combo = QComboBox()
         for name in COLOR_THEMES.keys():
             self.color_combo.addItem(name)
-        self.color_combo.currentIndexChanged.connect(self._on_style_changed)
-        selectors_grid.addWidget(self.color_combo, 0, 1)
+        self.color_combo.currentTextChanged.connect(self._on_style_changed)
+        grid.addWidget(self.color_combo, 0, 1, 1, 2)
 
-        # Filter Dynamics Selector
-        selectors_grid.addWidget(QLabel("Tracking Profile:"), 1, 0)
+        # Smoothing Preset (1€ Filter)
+        grid.addWidget(QLabel("Smoothing (1€):"), 1, 0)
         self.smooth_combo = QComboBox()
-        for name in FILTER_PRESETS.keys():
-            self.smooth_combo.addItem(name)
-        self.smooth_combo.currentIndexChanged.connect(self._on_smoothing_changed)
-        selectors_grid.addWidget(self.smooth_combo, 1, 1)
+        for preset in FILTER_PRESETS.keys():
+            self.smooth_combo.addItem(preset)
+        self.smooth_combo.currentTextChanged.connect(self._on_smoothing_changed)
+        grid.addWidget(self.smooth_combo, 1, 1, 1, 2)
 
-        opt_layout.addLayout(selectors_grid)
-
-        # Sliders Row (Gaze Sensitivity, Radius & Fill Opacity)
-        sliders_grid = QGridLayout()
-        sliders_grid.setHorizontalSpacing(14)
-        sliders_grid.setVerticalSpacing(8)
-
-        # Eye Gaze Sensitivity
-        sliders_grid.addWidget(QLabel("Eye Gaze Gain:"), 0, 0)
+        # Gaze Gain Slider
+        grid.addWidget(QLabel("Gaze Gain:"), 2, 0)
         self.gaze_gain_slider = QSlider(Qt.Orientation.Horizontal)
-        self.gaze_gain_slider.setRange(8, 40)  # 0.8x ~ 4.0x
-        self.gaze_gain_slider.setValue(18)     # 1.8x default
+        self.gaze_gain_slider.setRange(5, 30)
+        self.gaze_gain_slider.setValue(10)
         self.gaze_gain_slider.valueChanged.connect(self._on_gain_changed)
-        self.gaze_gain_lbl = QLabel("1.8x")
+        self.gaze_gain_lbl = QLabel("1.0x")
         self.gaze_gain_lbl.setProperty("class", "tally-value-mono")
-        sliders_grid.addWidget(self.gaze_gain_slider, 0, 1)
-        sliders_grid.addWidget(self.gaze_gain_lbl, 0, 2)
+        grid.addWidget(self.gaze_gain_slider, 2, 1)
+        grid.addWidget(self.gaze_gain_lbl, 2, 2)
 
-        # Reticle Radius
-        sliders_grid.addWidget(QLabel("Reticle Radius:"), 1, 0)
+        # Reticle Size Slider
+        grid.addWidget(QLabel("Reticle Radius:"), 3, 0)
         self.size_slider = QSlider(Qt.Orientation.Horizontal)
-        self.size_slider.setRange(12, 60)
+        self.size_slider.setRange(10, 60)
         self.size_slider.setValue(24)
         self.size_slider.valueChanged.connect(self._on_style_changed)
         self.size_val_lbl = QLabel("24 px")
         self.size_val_lbl.setProperty("class", "tally-value-mono")
-        sliders_grid.addWidget(self.size_slider, 1, 1)
-        sliders_grid.addWidget(self.size_val_lbl, 1, 2)
+        grid.addWidget(self.size_slider, 3, 1)
+        grid.addWidget(self.size_val_lbl, 3, 2)
 
-        # Reticle Fill Alpha
-        sliders_grid.addWidget(QLabel("Fill Density:"), 2, 0)
+        # Fill Opacity Slider
+        grid.addWidget(QLabel("Fill Opacity:"), 4, 0)
         self.opacity_slider = QSlider(Qt.Orientation.Horizontal)
         self.opacity_slider.setRange(10, 150)
-        self.opacity_slider.setValue(60)
+        self.opacity_slider.setValue(45)
         self.opacity_slider.valueChanged.connect(self._on_style_changed)
-        self.opacity_val_lbl = QLabel("60")
+        self.opacity_val_lbl = QLabel("45")
         self.opacity_val_lbl.setProperty("class", "tally-value-mono")
-        sliders_grid.addWidget(self.opacity_slider, 2, 1)
-        sliders_grid.addWidget(self.opacity_val_lbl, 2, 2)
+        grid.addWidget(self.opacity_slider, 4, 1)
+        grid.addWidget(self.opacity_val_lbl, 4, 2)
 
-        opt_layout.addLayout(sliders_grid)
+        opt_layout.addLayout(grid)
+        layout.addWidget(opt_card)
 
-        main_layout.addWidget(opt_card)
+        layout.addStretch()
+        self.tabs.addTab(tab, "🎛️ CONTROLS & CALIB")
 
-        # ---------------------------------------------------------
-        # Bottom Utility Bar (Overlay Toggle & Minimization)
-        # ---------------------------------------------------------
-        bottom_bar = QHBoxLayout()
-        self.hud_toggle_btn = QPushButton("HUD Overlay: Visible")
-        self.hud_toggle_btn.clicked.connect(self._toggle_hud)
-        bottom_bar.addWidget(self.hud_toggle_btn)
+    def _init_tab_inspector(self):
+        """Tab 2: 3D Face Wireframe Preview & Full Data Debug Inspector"""
+        tab = QWidget()
+        layout = QVBoxLayout(tab)
+        layout.setContentsMargins(14, 14, 14, 14)
+        layout.setSpacing(10)
 
-        main_layout.addLayout(bottom_bar)
+        # Top Section: 3D Wireframe Face Widget
+        self.face_preview = FacePreviewWidget()
+        self.face_preview.setFixedHeight(230)
+        layout.addWidget(self.face_preview)
+
+        # Bottom Section: Data Debug Telemetry Card
+        debug_card = QFrame()
+        debug_card.setProperty("class", "tally-card")
+        debug_layout = QVBoxLayout(debug_card)
+        debug_layout.setSpacing(8)
+
+        dbg_title = QLabel("PACKET & SIGNAL TELEMETRY INSPECTOR")
+        dbg_title.setProperty("class", "tally-section-title")
+        debug_layout.addWidget(dbg_title)
+
+        dbg_grid = QGridLayout()
+        dbg_grid.setHorizontalSpacing(10)
+        dbg_grid.setVerticalSpacing(6)
+
+        # Row 0: Protocol & Packet Size
+        dbg_grid.addWidget(QLabel("Format:"), 0, 0)
+        self.dbg_format_lbl = QLabel("Awaiting...")
+        self.dbg_format_lbl.setStyleSheet("font-family: monospace; color: #38bdf8; font-weight: bold;")
+        dbg_grid.addWidget(self.dbg_format_lbl, 0, 1)
+
+        dbg_grid.addWidget(QLabel("Packet Size:"), 0, 2)
+        self.dbg_pktsize_lbl = QLabel("0 Bytes")
+        self.dbg_pktsize_lbl.setProperty("class", "tally-value-mono")
+        dbg_grid.addWidget(self.dbg_pktsize_lbl, 0, 3)
+
+        # Row 1: FPS Rate & Frame Jitter
+        dbg_grid.addWidget(QLabel("Frame Rate:"), 1, 0)
+        self.dbg_fps_lbl = QLabel("0.0 FPS")
+        self.dbg_fps_lbl.setStyleSheet("font-family: monospace; color: #34d399; font-weight: bold;")
+        dbg_grid.addWidget(self.dbg_fps_lbl, 1, 1)
+
+        dbg_grid.addWidget(QLabel("Frame Jitter:"), 1, 2)
+        self.dbg_jitter_lbl = QLabel("0.0 ms")
+        self.dbg_jitter_lbl.setProperty("class", "tally-value-mono")
+        dbg_grid.addWidget(self.dbg_jitter_lbl, 1, 3)
+
+        # Row 2: Head Position (X, Y, Z cm)
+        dbg_grid.addWidget(QLabel("Head Pos:"), 2, 0)
+        self.dbg_headpos_lbl = QLabel("X: 0.0  Y: 0.0  Z: 0.0 cm")
+        self.dbg_headpos_lbl.setProperty("class", "tally-value-mono")
+        dbg_grid.addWidget(self.dbg_headpos_lbl, 2, 1, 1, 3)
+
+        # Row 3: Head Rotation (Pitch, Yaw, Roll deg)
+        dbg_grid.addWidget(QLabel("Head Rotation:"), 3, 0)
+        self.dbg_headrot_lbl = QLabel("P: +0.0°  Y: +0.0°  R: +0.0°")
+        self.dbg_headrot_lbl.setProperty("class", "tally-value-mono")
+        dbg_grid.addWidget(self.dbg_headrot_lbl, 3, 1, 1, 3)
+
+        # Row 4: Gaze Signal / LookAt
+        dbg_grid.addWidget(QLabel("Eye Signal:"), 4, 0)
+        self.dbg_gaze_lbl = QLabel("Waiting...")
+        self.dbg_gaze_lbl.setStyleSheet("font-family: monospace; color: #34d399;")
+        dbg_grid.addWidget(self.dbg_gaze_lbl, 4, 1, 1, 3)
+
+        # Row 5: Blinks Left & Right
+        dbg_grid.addWidget(QLabel("Blink Left:"), 5, 0)
+        self.dbg_blink_l_lbl = QLabel("0.00")
+        self.dbg_blink_l_lbl.setProperty("class", "tally-value-mono")
+        dbg_grid.addWidget(self.dbg_blink_l_lbl, 5, 1)
+
+        dbg_grid.addWidget(QLabel("Blink Right:"), 5, 2)
+        self.dbg_blink_r_lbl = QLabel("0.00")
+        self.dbg_blink_r_lbl.setProperty("class", "tally-value-mono")
+        dbg_grid.addWidget(self.dbg_blink_r_lbl, 5, 3)
+
+        debug_layout.addLayout(dbg_grid)
+
+        # Raw Packet Snippet Box
+        raw_box = QFrame()
+        raw_box.setProperty("class", "tally-card-elevated")
+        raw_layout = QVBoxLayout(raw_box)
+        raw_layout.setContentsMargins(10, 6, 10, 6)
+        raw_lbl = QLabel("RAW PACKET SNIPPET")
+        raw_lbl.setProperty("class", "tally-section-title")
+        self.raw_packet_lbl = QLabel("[ No UDP packet ingested yet ]")
+        self.raw_packet_lbl.setStyleSheet("font-family: monospace; font-size: 11px; color: #9ca3af;")
+        self.raw_packet_lbl.setWordWrap(True)
+        raw_layout.addWidget(raw_lbl)
+        raw_layout.addWidget(self.raw_packet_lbl)
+        debug_layout.addWidget(raw_box)
+
+        layout.addWidget(debug_card)
+        layout.addStretch()
+
+        self.tabs.addTab(tab, "👤 3D FACE & DATA DEBUG")
 
     def _update_telemetry(self):
         connected = self.receiver.is_connected()
         self.live_indicator.set_active(connected)
-        
+        fps = self.receiver.fps
+
         if connected:
-            self.badge_text.setText(f"LIVE // {self.receiver.fps:.1f} FPS")
+            self.badge_text.setText(f"LIVE // {fps:.1f} FPS")
             self.badge_text.setStyleSheet("font-size: 11px; font-weight: 700; color: #10b981; letter-spacing: 0.5px;")
-            self.fps_val.setText(f"{self.receiver.fps:.1f} FPS")
+            self.fps_val.setText(f"{fps:.1f} FPS")
             self.fps_val.setStyleSheet("font-family: monospace; font-size: 20px; font-weight: 700; color: #34d399;")
         else:
             self.badge_text.setText("OFFLINE // WAITING")
@@ -538,27 +682,55 @@ class ControlPanel(QMainWindow):
         self.packets_val.setText(f"{self.receiver.packet_count:,}")
 
         frame = self.receiver.get_latest_frame()
+        # Feed frame to 3D Wireframe Preview
+        self.face_preview.update_frame(frame)
+
         if frame:
             hx, hy, hz = frame.head_pos
-            self.head_vec_lbl.setText(f"Head: X:{hx:+.2f} Y:{hy:+.2f} Z:{hz:+.2f}m")
-            
-            # Gaze Signal display
-            self.gaze_signal_lbl.setText(frame.raw_gaze_debug)
-            if "NO EYE" in frame.raw_gaze_debug:
-                self.gaze_signal_lbl.setStyleSheet("color: #ef4444; font-size: 11px; font-weight: 700;")
-            else:
-                self.gaze_signal_lbl.setStyleSheet("color: #34d399; font-size: 11px; font-weight: 700;")
+            # Debug Inspector updates
+            self.dbg_format_lbl.setText("Fast Binary (ARF1 84B)" if self.receiver.last_packet_size == 84 else "Raw JSON Stream")
+            self.dbg_pktsize_lbl.setText(f"{self.receiver.last_packet_size} Bytes")
+            self.dbg_fps_lbl.setText(f"{fps:.1f} FPS")
+            self.dbg_jitter_lbl.setText(f"{self.receiver.jitter_ms:.1f} ms")
 
-            # Raw packet snippet
-            self.raw_packet_lbl.setText(f"Raw: {frame.raw_packet_debug}")
+            self.dbg_headpos_lbl.setText(f"X:{hx*100:+.1f}  Y:{hy*100:+.1f}  Z:{hz*100:+.1f} cm")
+
+            # Extract Euler angles for display
+            qx, qy, qz, qw = frame.head_rot
+            sinr = 2 * (qw * qx + qy * qz)
+            cosr = 1 - 2 * (qx * qx + qy * qy)
+            roll = math.degrees(math.atan2(sinr, cosr))
+
+            sinp = 2 * (qw * qy - qz * qx)
+            sinp = max(-1.0, min(1.0, sinp))
+            pitch = math.degrees(math.asin(sinp))
+
+            siny = 2 * (qw * qz + qx * qy)
+            cosy = 1 - 2 * (qy * qy + qz * qz)
+            yaw = math.degrees(math.atan2(siny, cosy))
+
+            self.dbg_headrot_lbl.setText(f"Pitch:{pitch:+.1f}°  Yaw:{yaw:+.1f}°  Roll:{roll:+.1f}°")
+            self.dbg_gaze_lbl.setText(frame.raw_gaze_debug)
+
+            self.dbg_blink_l_lbl.setText(f"{frame.blink_left:.2f}")
+            self.dbg_blink_r_lbl.setText(f"{frame.blink_right:.2f}")
+
+            self.raw_packet_lbl.setText(f"Header: {frame.raw_packet_debug} | LookAt: [{frame.look_at_point[0]:.2f}, {frame.look_at_point[1]:.2f}]m")
         else:
-            self.gaze_signal_lbl.setText("Eye Signal: WAITING...")
-            self.gaze_signal_lbl.setStyleSheet("color: #6b7280; font-size: 11px;")
-            self.raw_packet_lbl.setText("Raw: [ Waiting for UDP stream... ]")
+            self.dbg_format_lbl.setText("Awaiting UDP feed...")
+            self.dbg_pktsize_lbl.setText("0 Bytes")
+            self.dbg_fps_lbl.setText("0.0 FPS")
+            self.dbg_jitter_lbl.setText("0.0 ms")
+            self.dbg_headpos_lbl.setText("X: 0.0  Y: 0.0  Z: 0.0 cm")
+            self.dbg_headrot_lbl.setText("P: +0.0°  Y: +0.0°  R: +0.0°")
+            self.dbg_gaze_lbl.setText("Waiting for stream...")
+            self.raw_packet_lbl.setText("[ No UDP packet ingested yet ]")
 
     def _start_calibration(self):
-        # Open calibration window immediately without OS alert sound
         self.calib_win.start_calibration()
+
+    def _start_active_mouse_calibration(self):
+        self.calib_win.start_active_mouse_calibration()
 
     def _on_calibration_finished(self, success: bool):
         if success:
@@ -572,10 +744,16 @@ class ControlPanel(QMainWindow):
             self.calib_notice_lbl.setText("Calibration aborted or incomplete")
             self.calib_notice_lbl.setStyleSheet("color: #f59e0b; font-size: 11px;")
 
+    def _on_boost_slider_changed(self, value: int):
+        self.calibrator.hybrid_boost_gain = value / 100.0
+        self.boost_val_lbl.setText(f"{value}%")
+        self.calibrator.save()
+
     def _reset_calibration(self):
         self.calibrator.is_calibrated = False
-        self.calibrator.poly_weights_x = None
-        self.calibrator.poly_weights_y = None
+        self.calibrator.anchor_gaze_centers = None
+        self.calibrator.anchor_screen_pts = None
+        self.calibrator.triangle_affines = None
         if os.path.exists(self.calibrator.save_path):
             try:
                 os.remove(self.calibrator.save_path)
@@ -605,7 +783,7 @@ class ControlPanel(QMainWindow):
 
     def _on_smoothing_changed(self):
         preset_name = self.smooth_combo.currentText()
-        min_cutoff, beta = FILTER_PRESETS.get(preset_name, (1.2, 0.04))
+        min_cutoff, beta = FILTER_PRESETS.get(preset_name, (0.4, 0.008))
         self.hud.set_smoothing(min_cutoff, beta)
 
     def _toggle_hud(self):

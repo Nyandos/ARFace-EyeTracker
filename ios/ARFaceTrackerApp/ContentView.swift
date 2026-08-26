@@ -6,7 +6,7 @@ struct ContentView: View {
 
     @AppStorage("target_pc_ip") private var targetIP: String = "192.168.1.100"
     @AppStorage("target_pc_port") private var targetPort: String = "5005"
-    @State private var selectedMode: StreamMode = .rawJSON
+    @State private var selectedMode: StreamMode = .binary
     @State private var isEcoMode: Bool = false
 
     var body: some View {
