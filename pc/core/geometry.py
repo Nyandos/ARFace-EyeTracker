@@ -127,14 +127,28 @@ class GeometryEstimator:
         self.has_physical_pose = True
         print(f"[Geometry] Physical 3D Monitor Placement Injected: X={pos_x_m*100.0:.1f}cm, Y={pos_y_m*100.0:.1f}cm, Z={pos_z_m*100.0:.1f}cm, Tilt={pitch_deg:.1f}°")
 
-    def set_sensor_lab_angles(self, monitor_pitch_deg: float, phone_pitch_deg: float):
+    def set_sensor_lab_angles(
+        self,
+        monitor_pitch_deg: float,
+        phone_pitch_deg: float,
+        monitor_back_tilt_deg: Optional[float] = None,
+        phone_upward_tilt_deg: Optional[float] = None,
+        relative_angle_deg: Optional[float] = None
+    ):
         """
         Applies ground-truth physical tilt angles measured via iPhone screen-contact Sensor Lab.
-        monitor_pitch_deg: Upward angle of PC monitor (e.g. 85° = tilted back 5° from vertical)
-        phone_pitch_deg: Upward angle of iPhone on desk stand (e.g. 28°)
+        Properly handles optical axis inversion:
+        - Monitor back-tilt from vertical (e.g. +5° tilted backwards)
+        - Phone upward tilt from vertical (e.g. +28° tilted up on stand)
+        - True Relative Intersect Pitch = phone_upward_tilt + monitor_back_tilt (e.g. 33°)
         """
-        monitor_back_tilt = 90.0 - float(monitor_pitch_deg)
-        relative_pitch = float(phone_pitch_deg) + monitor_back_tilt
+        if relative_angle_deg is not None and relative_angle_deg > 0:
+            relative_pitch = float(relative_angle_deg)
+        else:
+            b_tilt = monitor_back_tilt_deg if monitor_back_tilt_deg is not None else (90.0 - float(monitor_pitch_deg))
+            p_tilt = phone_upward_tilt_deg if phone_upward_tilt_deg is not None else max(0.0, 90.0 - float(phone_pitch_deg))
+            relative_pitch = p_tilt + b_tilt
+
         self.pnp_pitch_rad = math.radians(relative_pitch)
         self.has_physical_pose = True
         print(f"[Geometry] Sensor Lab Injected: MonitorPitch={monitor_pitch_deg:.1f}°, PhonePitch={phone_pitch_deg:.1f}°, RelativeIntersectPitch={relative_pitch:.1f}°")

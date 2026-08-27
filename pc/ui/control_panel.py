@@ -804,9 +804,20 @@ class ControlPanel(QMainWindow):
     def _on_sensor_data_received(self, data: dict):
         m_pitch = float(data.get("monitor_pitch_deg", 90.0))
         p_pitch = float(data.get("phone_pitch_deg", 25.0))
+        b_tilt = data.get("monitor_back_tilt_deg")
+        p_tilt = data.get("phone_upward_tilt_deg")
         rel_angle = float(data.get("relative_angle_deg", abs(m_pitch - p_pitch)))
-        self.geometry.set_sensor_lab_angles(m_pitch, p_pitch)
-        self.calib_notice_lbl.setText(f"📐 センサー同期完了: モニター {m_pitch:.1f}° | iPhone {p_pitch:.1f}° (交差 {rel_angle:.1f}°)")
+
+        self.geometry.set_sensor_lab_angles(
+            monitor_pitch_deg=m_pitch,
+            phone_pitch_deg=p_pitch,
+            monitor_back_tilt_deg=b_tilt,
+            phone_upward_tilt_deg=p_tilt,
+            relative_angle_deg=rel_angle
+        )
+        tilt_str = f"+{b_tilt:.1f}°" if b_tilt is not None and b_tilt >= 0 else f"{b_tilt:.1f}°" if b_tilt is not None else f"{90.0-m_pitch:.1f}°"
+        phone_tilt_str = f"{p_tilt:.1f}°" if p_tilt is not None else f"{p_pitch:.1f}°"
+        self.calib_notice_lbl.setText(f"📐 センサー同期完了: モニター後傾 {tilt_str} | iPhone仰角 {phone_tilt_str} (交差 {rel_angle:.1f}°)")
         self.calib_notice_lbl.setStyleSheet("color: #38bdf8; font-size: 11px; font-weight: 700;")
 
     def closeEvent(self, event):

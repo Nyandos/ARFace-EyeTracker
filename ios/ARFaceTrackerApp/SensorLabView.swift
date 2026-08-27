@@ -12,10 +12,15 @@ struct SensorLabView: View {
     // Calibration Steps
     @State private var step: Int = 1
     @State private var lockedMonitorPitch: Double? = nil
+    @State private var lockedMonitorBackTilt: Double? = nil
     @State private var lockedMonitorRoll: Double? = nil
     @State private var lockedPhonePitch: Double? = nil
     @State private var lockedPhoneRoll: Double? = nil
     @State private var uploadStatus: String? = nil
+
+    // 3-Second Timer
+    @State private var countdown: Int = 0
+    @State private var timer: Timer? = nil
 
     var body: some View {
         ZStack {
@@ -68,6 +73,7 @@ struct SensorLabView: View {
         }
         .onDisappear {
             motionMgr.stop()
+            timer?.invalidate()
         }
     }
 
@@ -89,17 +95,17 @@ struct SensorLabView: View {
             }
 
             if step == 1 {
-                VStack(alignment: .leading, spacing: 8) {
-                    Text("iPhoneの画面をPCモニターにぴったり密着させてください。")
+                VStack(alignment: .leading, spacing: 10) {
+                    Text("ボタンを押したら、3秒以内にiPhoneの画面をPCモニターにぴったり密着させてください。")
                         .font(.system(size: 12))
                         .foregroundColor(Color(red: 229/255, green: 231/255, blue: 235/255))
 
-                    Text("モニター自体の設置傾斜角（チルト角）を0.01°単位で正確に測定します。")
-                        .font(.system(size: 10))
-                        .foregroundColor(Color(red: 156/255, green: 163/255, blue: 175/255))
+                    Text("密着時に画面が見えなくても、3秒後に振動（ハプティクス）で自動ロックされます。")
+                        .font(.system(size: 11))
+                        .foregroundColor(Color(red: 56/255, green: 189/255, blue: 248/255))
 
                     HStack {
-                        Text("現在のモニター傾斜:")
+                        Text("現在のリアルタイム傾斜:")
                             .font(.system(size: 11, design: .monospaced))
                             .foregroundColor(Color(red: 156/255, green: 163/255, blue: 175/255))
                         Spacer()
@@ -111,33 +117,50 @@ struct SensorLabView: View {
                     .background(Color(red: 22/255, green: 31/255, blue: 48/255))
                     .cornerRadius(6)
 
-                    Button(action: lockMonitorAngle) {
-                        HStack {
-                            Image(systemName: "lock.fill")
-                            Text("密着完了：モニター角度をロック")
+                    if countdown > 0 {
+                        // Countdown Active Display
+                        VStack(spacing: 4) {
+                            Text("画面をモニターに当ててください...")
+                                .font(.system(size: 12, weight: .medium))
+                                .foregroundColor(Color(red: 251/255, green: 191/255, blue: 36/255))
+                            Text("\(countdown)")
+                                .font(.system(size: 36, weight: .black, design: .monospaced))
+                                .foregroundColor(Color(red: 251/255, green: 191/255, blue: 36/255))
                         }
-                        .font(.system(size: 12, weight: .bold))
-                        .foregroundColor(.white)
                         .frame(maxWidth: .infinity)
-                        .padding(.vertical, 11)
-                        .background(Color(red: 2/255, green: 132/255, blue: 199/255))
+                        .padding(.vertical, 8)
+                        .background(Color(red: 251/255, green: 191/255, blue: 36/255).opacity(0.15))
                         .cornerRadius(6)
+                    } else {
+                        // Trigger Button
+                        Button(action: startCountdownMeasurement) {
+                            HStack(spacing: 8) {
+                                Image(systemName: "timer")
+                                Text("⏳ 3秒タイマーでモニター密着測定を開始")
+                            }
+                            .font(.system(size: 13, weight: .bold))
+                            .foregroundColor(.white)
+                            .frame(maxWidth: .infinity)
+                            .padding(.vertical, 12)
+                            .background(Color(red: 2/255, green: 132/255, blue: 199/255))
+                            .cornerRadius(6)
+                        }
                     }
                 }
             } else {
-                VStack(alignment: .leading, spacing: 8) {
+                VStack(alignment: .leading, spacing: 10) {
                     Text("iPhoneを机のスタンド（使用位置）に置いてください。")
                         .font(.system(size: 12))
                         .foregroundColor(Color(red: 229/255, green: 231/255, blue: 235/255))
 
-                    if let mPitch = lockedMonitorPitch {
+                    if let bTilt = lockedMonitorBackTilt {
                         HStack {
-                            Text("ロック済みモニター角度:")
+                            Text("測定済みモニター後傾角:")
                                 .font(.system(size: 11, design: .monospaced))
                                 .foregroundColor(Color(red: 156/255, green: 163/255, blue: 175/255))
                             Spacer()
-                            Text("\(mPitch, specifier: "%.2f")°")
-                                .font(.system(size: 14, weight: .bold, design: .monospaced))
+                            Text("\(bTilt >= 0 ? "+" : "")\(bTilt, specifier: "%.2f")° (垂直から)")
+                                .font(.system(size: 13, weight: .bold, design: .monospaced))
                                 .foregroundColor(Color(red: 56/255, green: 189/255, blue: 248/255))
                         }
                         .padding(8)
@@ -150,7 +173,8 @@ struct SensorLabView: View {
                             .font(.system(size: 11, design: .monospaced))
                             .foregroundColor(Color(red: 156/255, green: 163/255, blue: 175/255))
                         Spacer()
-                        Text("\(motionMgr.pitch, specifier: "%.2f")°")
+                        let phoneTilt = max(0.0, 90.0 - motionMgr.pitch)
+                        Text("\(phoneTilt, specifier: "%.2f")°")
                             .font(.system(size: 18, weight: .bold, design: .monospaced))
                             .foregroundColor(Color(red: 52/255, green: 211/255, blue: 153/255))
                     }
@@ -290,22 +314,55 @@ struct SensorLabView: View {
     // -------------------------------------------------------------
     // Actions
     // -------------------------------------------------------------
+    private func startCountdownMeasurement() {
+        countdown = 3
+        timer?.invalidate()
+        timer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { t in
+            if countdown > 1 {
+                countdown -= 1
+            } else {
+                t.invalidate()
+                countdown = 0
+                lockMonitorAngle()
+            }
+        }
+    }
+
     private func lockMonitorAngle() {
+        // Haptic feedback (Silent)
+        let generator = UINotificationFeedbackGenerator()
+        generator.prepare()
+        generator.notificationOccurred(.success)
+
         lockedMonitorPitch = motionMgr.pitch
         lockedMonitorRoll = motionMgr.roll
+
+        // Back tilt angle: When screen is pressed against monitor facing backwards,
+        // if monitor is tilted backwards from vertical, top of phone leans away from user.
+        // 90° = vertical upright. Less than 90° = tilted back.
+        let backTilt = 90.0 - motionMgr.pitch
+        lockedMonitorBackTilt = backTilt
         step = 2
     }
 
     private func uploadCalibrationToPC() {
-        guard let mPitch = lockedMonitorPitch,
+        guard let bTilt = lockedMonitorBackTilt,
               let url = URL(string: "http://\(targetIP):5006/upload_sensor_data") else { return }
 
+        // Upward tilt of iPhone on desk stand (0° = vertical upright, 28° = tilted up)
+        let phoneUpwardTilt = max(0.0, 90.0 - motionMgr.pitch)
+        // True physical intersection angle:
+        // Phone upward tilt + Monitor backward tilt
+        let relativeIntersect = phoneUpwardTilt + bTilt
+
         let payload: [String: Any] = [
-            "monitor_pitch_deg": mPitch,
+            "monitor_pitch_deg": lockedMonitorPitch ?? 90.0,
+            "monitor_back_tilt_deg": bTilt,
             "monitor_roll_deg": lockedMonitorRoll ?? 0.0,
             "phone_pitch_deg": motionMgr.pitch,
+            "phone_upward_tilt_deg": phoneUpwardTilt,
             "phone_roll_deg": motionMgr.roll,
-            "relative_angle_deg": abs(mPitch - motionMgr.pitch)
+            "relative_angle_deg": relativeIntersect
         ]
 
         guard let jsonData = try? JSONSerialization.data(withJSONObject: payload) else { return }
@@ -320,7 +377,7 @@ struct SensorLabView: View {
                 if let err = err {
                     self.uploadStatus = "送信エラー: \(err.localizedDescription)"
                 } else {
-                    self.uploadStatus = "✓ PCへ適用完了！ (相対角 \(String(format: "%.1f", abs(mPitch - motionMgr.pitch)))°)"
+                    self.uploadStatus = "✓ PCへ適用完了！ (相対交差角 \(String(format: "%.1f", relativeIntersect))°)"
                 }
             }
         }.resume()

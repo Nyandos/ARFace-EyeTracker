@@ -211,7 +211,13 @@ def test_pipeline():
     print("[OK] PhotoReceiver started and stopped cleanly.")
 
     print("\n=== 8. Test Sensor Lab Monitor Inclinometer Ingestion ===")
-    geo.set_sensor_lab_angles(monitor_pitch_deg=85.0, phone_pitch_deg=28.0)
+    geo.set_sensor_lab_angles(
+        monitor_pitch_deg=85.0,
+        phone_pitch_deg=62.0,
+        monitor_back_tilt_deg=5.0,
+        phone_upward_tilt_deg=28.0,
+        relative_angle_deg=33.0
+    )
     assert abs(math.degrees(geo.pnp_pitch_rad) - 33.0) < 1e-3
     p_hit_sensor = geo.compute_physical_ray_intersection(np.array([0.0, 0.1, 0.45]), np.array([0.0, 0.0, -1.0]))
     assert p_hit_sensor is not None
