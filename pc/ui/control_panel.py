@@ -17,6 +17,7 @@ from .hud_overlay import HUDOverlay
 from .calib_window import CalibrationWindow
 from .face_preview import FacePreviewWidget
 from .spatial_alignment_dialog import SpatialAlignmentDialog
+from .face_simulator_window import FaceSimulatorWindow
 from core.photo_receiver import PhotoReceiver
 
 # -------------------------------------------------------------------------
@@ -325,6 +326,7 @@ class ControlPanel(QMainWindow):
         self.photo_receiver.sensor_data_received.connect(self._on_sensor_data_received)
         self.photo_receiver.start()
         self.spatial_dialog: Optional[SpatialAlignmentDialog] = None
+        self.sim_dialog: Optional[FaceSimulatorWindow] = None
 
         # Signals
         self.calib_win.calibration_finished.connect(self._on_calibration_finished)
@@ -518,10 +520,16 @@ class ControlPanel(QMainWindow):
         calib_layout.addLayout(calib_btns)
 
         pnp_btn_row = QHBoxLayout()
-        self.pnp_spatial_btn = QPushButton("📐 3D SPATIAL ALIGNMENT (モニター写真測定)")
+        self.pnp_spatial_btn = QPushButton("📐 3D SPATIAL ALIGNMENT (写真測定)")
         self.pnp_spatial_btn.setProperty("class", "tally-purple-btn")
         self.pnp_spatial_btn.clicked.connect(self._open_spatial_alignment_dialog)
-        pnp_btn_row.addWidget(self.pnp_spatial_btn)
+        pnp_btn_row.addWidget(self.pnp_spatial_btn, stretch=3)
+
+        self.tab1_sim_btn = QPushButton("🎭 3D SIMULATOR (仮想動作)")
+        self.tab1_sim_btn.setProperty("class", "tally-teal-btn")
+        self.tab1_sim_btn.clicked.connect(self._open_face_simulator)
+        pnp_btn_row.addWidget(self.tab1_sim_btn, stretch=2)
+
         calib_layout.addLayout(pnp_btn_row)
 
         # Head-Gaze Hybrid Boost Slider
@@ -632,6 +640,14 @@ class ControlPanel(QMainWindow):
         self.face_preview = FacePreviewWidget()
         self.face_preview.setFixedHeight(230)
         layout.addWidget(self.face_preview)
+
+        # Simulator Launch Button
+        sim_btn_row = QHBoxLayout()
+        self.tab2_sim_btn = QPushButton("🎭 3D FACE MOTION SIMULATOR (仮想顔デバッガ起動)")
+        self.tab2_sim_btn.setProperty("class", "tally-purple-btn")
+        self.tab2_sim_btn.clicked.connect(self._open_face_simulator)
+        sim_btn_row.addWidget(self.tab2_sim_btn)
+        layout.addLayout(sim_btn_row)
 
         # Bottom Section: Data Debug Telemetry Card
         debug_card = QFrame()
@@ -796,6 +812,14 @@ class ControlPanel(QMainWindow):
         self.spatial_dialog.raise_()
         self.spatial_dialog.activateWindow()
 
+    def _open_face_simulator(self):
+        if not self.sim_dialog:
+            port = self.receiver.port
+            self.sim_dialog = FaceSimulatorWindow(receiver=self.receiver, target_port=port, parent=self)
+        self.sim_dialog.show()
+        self.sim_dialog.raise_()
+        self.sim_dialog.activateWindow()
+
     def _on_photo_received(self, img_arr: np.ndarray):
         if not self.spatial_dialog:
             self.spatial_dialog = SpatialAlignmentDialog(self.geometry, self)
@@ -823,6 +847,8 @@ class ControlPanel(QMainWindow):
     def closeEvent(self, event):
         if hasattr(self, 'photo_receiver') and self.photo_receiver:
             self.photo_receiver.stop()
+        if hasattr(self, 'sim_dialog') and self.sim_dialog:
+            self.sim_dialog.close()
         super().closeEvent(event)
 
     def _on_calibration_finished(self, success: bool):
