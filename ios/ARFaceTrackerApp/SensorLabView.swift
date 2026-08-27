@@ -105,11 +105,11 @@ struct SensorLabView: View {
                         .foregroundColor(Color(red: 56/255, green: 189/255, blue: 248/255))
 
                     HStack {
-                        Text("現在のリアルタイム傾斜:")
+                        Text("現在のモニター後傾角:")
                             .font(.system(size: 11, design: .monospaced))
                             .foregroundColor(Color(red: 156/255, green: 163/255, blue: 175/255))
                         Spacer()
-                        Text("\(motionMgr.pitch, specifier: "%.2f")°")
+                        Text("\(motionMgr.pitch, specifier: "%.1f")°")
                             .font(.system(size: 18, weight: .bold, design: .monospaced))
                             .foregroundColor(Color(red: 52/255, green: 211/255, blue: 153/255))
                     }
@@ -159,7 +159,7 @@ struct SensorLabView: View {
                                 .font(.system(size: 11, design: .monospaced))
                                 .foregroundColor(Color(red: 156/255, green: 163/255, blue: 175/255))
                             Spacer()
-                            Text("\(bTilt >= 0 ? "+" : "")\(bTilt, specifier: "%.2f")° (垂直から)")
+                            Text("\(bTilt, specifier: "%.1f")°")
                                 .font(.system(size: 13, weight: .bold, design: .monospaced))
                                 .foregroundColor(Color(red: 56/255, green: 189/255, blue: 248/255))
                         }
@@ -173,8 +173,7 @@ struct SensorLabView: View {
                             .font(.system(size: 11, design: .monospaced))
                             .foregroundColor(Color(red: 156/255, green: 163/255, blue: 175/255))
                         Spacer()
-                        let phoneTilt = max(0.0, 90.0 - motionMgr.pitch)
-                        Text("\(phoneTilt, specifier: "%.2f")°")
+                        Text("\(motionMgr.pitch, specifier: "%.1f")°")
                             .font(.system(size: 18, weight: .bold, design: .monospaced))
                             .foregroundColor(Color(red: 52/255, green: 211/255, blue: 153/255))
                     }
@@ -250,7 +249,7 @@ struct SensorLabView: View {
 
                 // Dynamic Bubble
                 let xOffset = CGFloat(max(-55.0, min(55.0, motionMgr.roll * 1.5)))
-                let yOffset = CGFloat(max(-55.0, min(55.0, (motionMgr.pitch - 90.0) * 1.5)))
+                let yOffset = CGFloat(max(-55.0, min(55.0, motionMgr.rawIncline * 1.5)))
 
                 Circle()
                     .fill(Color(red: 16/255, green: 185/255, blue: 129/255).opacity(0.8))
@@ -317,15 +316,19 @@ struct SensorLabView: View {
     private func startCountdownMeasurement() {
         countdown = 3
         timer?.invalidate()
-        timer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { t in
-            if countdown > 1 {
-                countdown -= 1
-            } else {
-                t.invalidate()
-                countdown = 0
-                lockMonitorAngle()
+        let t = Timer(timeInterval: 1.0, repeats: true) { [self] currentTimer in
+            DispatchQueue.main.async {
+                if self.countdown > 1 {
+                    self.countdown -= 1
+                } else {
+                    currentTimer.invalidate()
+                    self.countdown = 0
+                    self.lockMonitorAngle()
+                }
             }
         }
+        RunLoop.main.add(t, forMode: .common)
+        self.timer = t
     }
 
     private func lockMonitorAngle() {
@@ -334,14 +337,10 @@ struct SensorLabView: View {
         generator.prepare()
         generator.notificationOccurred(.success)
 
+        // Pure pitch tilt from vertical:
+        lockedMonitorBackTilt = motionMgr.pitch
         lockedMonitorPitch = motionMgr.pitch
         lockedMonitorRoll = motionMgr.roll
-
-        // Back tilt angle: When screen is pressed against monitor facing backwards,
-        // if monitor is tilted backwards from vertical, top of phone leans away from user.
-        // 90° = vertical upright. Less than 90° = tilted back.
-        let backTilt = 90.0 - motionMgr.pitch
-        lockedMonitorBackTilt = backTilt
         step = 2
     }
 
@@ -349,17 +348,16 @@ struct SensorLabView: View {
         guard let bTilt = lockedMonitorBackTilt,
               let url = URL(string: "http://\(targetIP):5006/upload_sensor_data") else { return }
 
-        // Upward tilt of iPhone on desk stand (0° = vertical upright, 28° = tilted up)
-        let phoneUpwardTilt = max(0.0, 90.0 - motionMgr.pitch)
+        // Pure upward tilt of iPhone on desk stand (e.g. 25.0°)
+        let phoneUpwardTilt = motionMgr.pitch
         // True physical intersection angle:
-        // Phone upward tilt + Monitor backward tilt
         let relativeIntersect = phoneUpwardTilt + bTilt
 
         let payload: [String: Any] = [
-            "monitor_pitch_deg": lockedMonitorPitch ?? 90.0,
+            "monitor_pitch_deg": 90.0 - bTilt,
             "monitor_back_tilt_deg": bTilt,
             "monitor_roll_deg": lockedMonitorRoll ?? 0.0,
-            "phone_pitch_deg": motionMgr.pitch,
+            "phone_pitch_deg": 90.0 - phoneUpwardTilt,
             "phone_upward_tilt_deg": phoneUpwardTilt,
             "phone_roll_deg": motionMgr.roll,
             "relative_angle_deg": relativeIntersect
@@ -387,7 +385,8 @@ struct SensorLabView: View {
 /// Real-time 60Hz CoreMotion Attitude / Gravity Streamer
 class PrecisionMotionManager: ObservableObject {
     private let motion = CMMotionManager()
-    @Published var pitch: Double = 0.0
+    @Published var pitch: Double = 0.0          // Pure upward tilt angle (0° to 90° from vertical), 100% immune to roll/steering!
+    @Published var rawIncline: Double = 0.0     // Signed front/back incline from vertical
     @Published var roll: Double = 0.0
     @Published var gravityX: Double = 0.0
     @Published var gravityY: Double = 0.0
@@ -396,21 +395,25 @@ class PrecisionMotionManager: ObservableObject {
     func start() {
         guard motion.isDeviceMotionAvailable else { return }
         motion.deviceMotionUpdateInterval = 1.0 / 30.0
-        motion.startDeviceMotionUpdates(to: .main) { [weak self] data, _ in
+        motion.showsDeviceMovementDisplay = true
+        motion.startDeviceMotionUpdates(using: .xArbitraryZVertical, to: .main) { [weak self] data, _ in
             guard let self = self, let d = data else { return }
             self.gravityX = d.gravity.x
             self.gravityY = d.gravity.y
             self.gravityZ = d.gravity.z
 
-            // Calculate upward angle relative to vertical earth gravity
-            // 90° = standing vertically upright
-            // 0° = lying flat horizontally
-            let norm = sqrt(d.gravity.x * d.gravity.x + d.gravity.y * d.gravity.y + d.gravity.z * d.gravity.z)
-            if norm > 1e-4 {
-                let cosUp = max(-1.0, min(1.0, -d.gravity.y / norm))
-                self.pitch = acos(cosUp) * 180.0 / .pi
-            }
+            // -------------------------------------------------------------
+            // Pure Pitch Inclinometer (Roll-Invariant):
+            // By projecting onto the Z vs sqrt(X^2 + Y^2) plane, any rotation
+            // around the screen face (steering wheel roll) is mathematically canceled:
+            // cos^2(roll) + sin^2(roll) = 1.
+            // -------------------------------------------------------------
+            let planeNorm = sqrt(d.gravity.x * d.gravity.x + d.gravity.y * d.gravity.y)
+            let tiltRad = atan2(abs(d.gravity.z), max(1e-4, planeNorm))
+            let tiltDeg = tiltRad * 180.0 / .pi
 
+            self.pitch = tiltDeg
+            self.rawIncline = atan2(d.gravity.z, max(1e-4, planeNorm)) * 180.0 / .pi
             self.roll = atan2(d.gravity.x, -d.gravity.y) * 180.0 / .pi
         }
     }
